@@ -1,6 +1,0 @@
-2026/04/14-17:36:20.098 1fa37a3 Reusing MANIFEST /Users/jano/voley-bot/.wwebjs_auth/session/Default/Local Storage/leveldb/MANIFEST-000001
-2026/04/14-17:36:20.100 1fa37a3 Recovering log #61
-2026/04/14-17:36:20.101 1fa37a3 Reusing old log /Users/jano/voley-bot/.wwebjs_auth/session/Default/Local Storage/leveldb/000061.log 
-2026/04/14-17:37:20.105 1fa37a6 Level-0 table #65: started
-2026/04/14-17:37:20.109 1fa37a6 Level-0 table #65: 17430 bytes OK
-2026/04/14-17:37:20.111 1fa37a6 Delete type=0 #61
