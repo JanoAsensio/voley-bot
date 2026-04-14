@@ -1,0 +1,27 @@
+# env
+.env
+.env.local
+.env.*.local
+
+# node
+node_modules/
+
+# logs
+*.log
+logs/
+
+# build
+dist/
+build/
+
+# OS
+.DS_Store
+
+# editor
+.vscode/
+.idea/
+
+# whatsapp session (MUY IMPORTANTE)
+.session/
+sessions/
+auth_info.json
