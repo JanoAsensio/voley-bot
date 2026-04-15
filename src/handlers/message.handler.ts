@@ -14,11 +14,11 @@ import {
   buildMatchTitle,
   buildConfigMessage,
   buildListMessage,
+  isValidLength,
 } from "../utils/buildMessage";
 
 /**
- * JID del grupo en .env: termina en @g.us (ej. 120363...@g.us).
- * Para filtrar mensajes usa getGroupChatId: en mensajes propios el grupo está en `to`, no en `from`.
+ * JIDs del grupo en .env (terminan en @g.us). Para filtrar mensajes se usa getGroupChatId.
  */
 const ALLOWED_GROUP_IDS = (process.env.GROUP_ID ?? "")
   .split(",")
@@ -38,51 +38,52 @@ const DEBUG = process.env.BOT_DEBUG === "1" || process.env.BOT_DEBUG === "true";
 
 const isAllowedGroup = (chatId: string) => ALLOWED_GROUP_IDS.includes(chatId);
 
-/**
- * JID del chat del mensaje. WhatsApp expone el chat de grupo de forma fiable en `id.remote`
- * (@g.us); `from`/`to` a veces no coinciden con GROUP_ID si la sesión o el cliente cambian.
- */
 const getGroupChatId = (msg: any): string => {
-  const remote = msg.id?.remote;
-  if (typeof remote === "string" && remote.endsWith("@g.us")) {
-    return remote;
+  const from = msg.from;
+  if (typeof from === "string" && from.endsWith("@g.us")) {
+    return from;
   }
-  return msg.fromMe ? msg.to : msg.from;
+  return msg.id?.remote || from;
 };
 
 /**
- * En grupos, mensajes propios a veces no traen `author` y `from` no sirve para getContact().
- * El id del usuario conectado está en client.info.wid tras el evento `ready`.
+ * Estrategia híbrida:
+ * - mensajes de otros usuarios: responder citando (`reply`) por UX
+ * - mensajes propios (`fromMe`): enviar plano para evitar errores de quote
  */
+const sendGroupText = (msg: any, chatId: string, text: string) => {
+  if (!msg.fromMe) {
+    return msg.reply(text);
+  }
+  return msg.client.sendMessage(chatId, text, { sendSeen: false });
+};
 
+/**
+ * En grupos, el autor del mensaje; en mensajes propios, el wid del cliente.
+ */
 const getSenderId = (msg: any): string | undefined => {
-  // En grupos, SIEMPRE usar author
   if (msg.author) return msg.author;
-
-  // Mensajes propios
   if (msg.fromMe) {
     return msg.client?.info?.wid?._serialized;
   }
-
-  // fallback (por seguridad)
   return msg.from;
 };
 
 const normalizeUserId = (id: string): string => {
-  return id
-    .split(":")[0] // elimina dispositivo
-    .replace(/@.*/, ""); // elimina dominio (@c.us, etc)
+  return id.split(":")[0].replace(/@.*/, "");
 };
 
-const getSenderDisplayName = async (
-  msg: any,
-  senderId: string,
-): Promise<string> => {
-  if (msg.fromMe && msg.client?.info?.pushname) {
-    return msg.client.info.pushname;
-  }
-  const contact = await msg.client.getContactById(senderId);
-  return contact.pushname || contact.number;
+/**
+ * Nombre para la lista sin `getContactById` / `getContact`: en grupos con
+ * `message_create` la API de contactos suele fallar con `id` undefined.
+ * Preferimos metadatos del mensaje si existen; si no, un fallback estable.
+ */
+const resolveMemberDisplayName = (msg: any, normalizedId: string): string => {
+  const data = msg?._data as Record<string, unknown> | undefined;
+  const fromMeta = data?.notifyName ?? data?.senderName ?? data?.pushname;
+  if (typeof fromMeta === "string" && fromMeta.trim()) return fromMeta.trim();
+  if (normalizedId.length >= 4) return `Jugador ${normalizedId.slice(-4)}`;
+  return normalizedId ? `Jugador ${normalizedId}` : "Sin nombre";
 };
 
 const DAYS = [
@@ -117,8 +118,8 @@ const normalizeHour = (value: string): string | null => {
 export const handleMessage = async (msg: any) => {
   try {
     await maybeAutoReset();
-    const rawText = msg.body?.trim();
 
+    const rawText = (msg.body || msg.caption || "").trim();
     if (!rawText) return;
 
     const lowerText = rawText.toLowerCase();
@@ -167,6 +168,7 @@ export const handleMessage = async (msg: any) => {
     }
 
     const chatId = getGroupChatId(msg);
+
     if (!isAllowedGroup(chatId)) {
       if (DEBUG && COMMANDS.includes(command)) {
         console.log("[voley-bot] Comando ignorado: chat no permitido");
@@ -174,7 +176,6 @@ export const handleMessage = async (msg: any) => {
       return;
     }
 
-    // 🛑 evitar loops del bot
     if (
       msg.fromMe &&
       !COMMANDS.includes(command) &&
@@ -200,114 +201,146 @@ export const handleMessage = async (msg: any) => {
       );
       return;
     }
-    const name = await getSenderDisplayName(msg, id);
 
-    // =========================
-    // ✅ COMANDO: ESTOY
-    // =========================
     if (command === "estoy") {
       const result = manualName
         ? await addManualPlayer(manualName)
-        : await addPlayer({ id, name, source: "member" });
+        : await addPlayer({
+            id,
+            name: resolveMemberDisplayName(msg, id),
+            source: "member",
+          });
 
       if ("error" in result) {
-        return msg.reply(`⚠️ ${result.error}`);
+        return sendGroupText(msg, chatId, `⚠️ ${result.error}`);
       }
 
-      return msg.reply(buildListMessage(await getPlayers(), getMatchConfig()));
+      return sendGroupText(
+        msg,
+        chatId,
+        buildListMessage(await getPlayers(), getMatchConfig()),
+      );
     }
 
-    // =========================
-    // ❌ COMANDO: SALGO
-    // =========================
     if (command === "salgo") {
       const result = manualName
-        ? // ? await removeManualPlayerByName(manualName)
-          await removePlayerByName(manualName)
+        ? await removePlayerByName(manualName)
         : await removePlayer(id);
 
       if ("error" in result) {
-        return msg.reply(`⚠️ ${result.error}`);
+        return sendGroupText(msg, chatId, `⚠️ ${result.error}`);
       }
 
-      return msg.reply(buildListMessage(await getPlayers(), getMatchConfig()));
+      return sendGroupText(
+        msg,
+        chatId,
+        buildListMessage(await getPlayers(), getMatchConfig()),
+      );
     }
 
-    // =========================
-    // 📋 COMANDO: LISTA
-    // =========================
     if (command === "lista") {
-      return msg.reply(buildListMessage(await getPlayers(), getMatchConfig()));
+      return sendGroupText(
+        msg,
+        chatId,
+        buildListMessage(await getPlayers(), getMatchConfig()),
+      );
     }
-
-    // =========================
-    // 📋 COMANDO: LIMPIAR LISTA
-    // =========================
 
     if (command === "limpiar lista") {
       await resetPlayers();
 
-      return msg.reply(
+      return sendGroupText(
+        msg,
+        chatId,
         "🧹 Lista reiniciada\n\n" +
           buildListMessage(await getPlayers(), getMatchConfig()),
       );
     }
 
-    // =========================
-    // ⚙️ COMANDO: CONFIG
-    // =========================
     if (command === "config") {
-      return msg.reply(buildConfigMessage());
+      return sendGroupText(msg, chatId, buildConfigMessage());
     }
 
-    // =========================
-    // 🗓️ COMANDO: PARTIDO
-    // =========================
     if (command === "partido") {
-      return msg.reply(buildMatchTitle(getMatchConfig()));
+      return sendGroupText(msg, chatId, buildMatchTitle(getMatchConfig()));
     }
 
     if (command === "partido_update") {
       if (!manualName || !partidoField) {
-        return msg.reply("⚠️ Falta valor. Ej: `partido dia: viernes`");
+        return sendGroupText(
+          msg,
+          chatId,
+          "⚠️ Falta valor para actualizar. Ej: `partido dia: viernes`.",
+        );
       }
 
       if (partidoField === "dia") {
         const normalized = normalizeDay(manualName);
         if (!normalized) {
-          return msg.reply("⚠️ Día inválido. Usa: lunes a domingo.");
+          return sendGroupText(
+            msg,
+            chatId,
+            "⚠️ Día inválido. Usa de lunes a domingo. Ej: `partido dia: viernes`.",
+          );
         }
         const config = await updateMatchConfigField("day", normalized);
-        return msg.reply(
-          `✅ Partido actualizado:\n${buildListMessage(await getPlayers(), config)}`,
+        return sendGroupText(
+          msg,
+          chatId,
+          `✅ Partido actualizado:
+          \n${buildListMessage(await getPlayers(), config)}`,
         );
       }
 
       if (partidoField === "hora") {
         const normalized = normalizeHour(manualName);
         if (!normalized) {
-          return msg.reply("⚠️ Hora inválida. Usa formato 0-23 o HH:MM.");
+          return sendGroupText(
+            msg,
+            chatId,
+            "⚠️ Hora inválida. Usa formato 0-23 o HH:MM. Ej: `partido hora: 21:30`.",
+          );
         }
         const config = await updateMatchConfigField("hour", normalized);
-        return msg.reply(
-          `✅ Partido actualizado:\n${buildListMessage(await getPlayers(), config)}`,
+        return sendGroupText(
+          msg,
+          chatId,
+          `✅ Partido actualizado:
+          \n${buildListMessage(await getPlayers(), config)}`,
         );
       }
 
       const normalizedPlace = manualName.trim();
+      if (!isValidLength(normalizedPlace)) {
+        return sendGroupText(
+          msg,
+          chatId,
+          "⚠️ El lugar no puede superar los 20 caracteres.",
+        );
+      }
       if (normalizedPlace.length < 2) {
-        return msg.reply("⚠️ Lugar inválido.");
+        return sendGroupText(
+          msg,
+          chatId,
+          "⚠️ Lugar inválido. Debe tener al menos 2 caracteres. Ej: `partido lugar: Club Florida`.",
+        );
       }
       const config = await updateMatchConfigField("place", normalizedPlace);
-      return msg.reply(
-        `✅ Partido actualizado:\n${buildListMessage(await getPlayers(), config)}`,
+      return sendGroupText(
+        msg,
+        chatId,
+        `✅ Partido actualizado:
+        \n${buildListMessage(await getPlayers(), config)}`,
       );
     }
 
     if (command === "partido_reset") {
       const config = await resetMatchConfig();
-      return msg.reply(
-        `✅ Partido reiniciado:\n${buildListMessage(await getPlayers(), config)}`,
+      return sendGroupText(
+        msg,
+        chatId,
+        `✅ Partido reiniciado:
+        \n${buildListMessage(await getPlayers(), config)}`,
       );
     }
   } catch (error) {

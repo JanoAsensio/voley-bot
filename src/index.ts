@@ -17,7 +17,9 @@ if (groupIds.length > 0 && !groupIds.every((id) => id.endsWith("@g.us"))) {
 }
 
 const client = new Client({
-  authStrategy: new LocalAuth(),
+  authStrategy: new LocalAuth({
+    clientId: "voley-bot-fresh",
+  }),
 });
 
 client.on("qr", (qr) => {

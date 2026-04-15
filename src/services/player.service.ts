@@ -1,5 +1,6 @@
 import { MongoClient, Collection } from "mongodb";
 import { Player } from "../types/player";
+import { isValidLength } from "../utils/buildMessage";
 
 export type MatchConfig = {
   day: string;
@@ -78,10 +79,6 @@ export const initPlayerStore = async () => {
   );
 };
 
-// =========================
-// 🔁 RESET AUTOMÁTICO
-// =========================
-
 const WEEK_DAYS = [
   "domingo",
   "lunes",
@@ -120,10 +117,6 @@ export const maybeAutoReset = async () => {
   console.log("🔁 Lista reiniciada automáticamente");
 };
 
-// =========================
-// ➕ ADD PLAYER
-// =========================
-
 export const addPlayer = async (player: Player) => {
   const normalizedNewName = normalizeManualNameForMatch(player.name);
 
@@ -134,7 +127,7 @@ export const addPlayer = async (player: Player) => {
   );
 
   if (exists) {
-    return { error: "Ese jugador ya está anotado" };
+    return { error: "Ya estás anotado" };
   }
 
   players.push({ ...player, source: "member" });
@@ -144,6 +137,10 @@ export const addPlayer = async (player: Player) => {
 };
 
 export const addManualPlayer = async (name: string) => {
+  if (!isValidLength(name)) {
+    return { error: "El nombre no puede superar los 20 caracteres." };
+  }
+
   const normalizedNewName = normalizeManualNameForMatch(name);
 
   const exists = players.some(
@@ -163,10 +160,6 @@ export const addManualPlayer = async (name: string) => {
 
   return { players };
 };
-
-// =========================
-// ❌ REMOVE
-// =========================
 
 export const removePlayer = async (id: string) => {
   const index = players.findIndex((p) => p.id === id);
@@ -189,7 +182,7 @@ export const removePlayerByName = async (name: string) => {
   );
 
   if (index === -1) {
-    return { error: "No está en la lista" };
+    return { error: "Ese jugador no está en la lista" };
   }
 
   players.splice(index, 1);
@@ -198,17 +191,9 @@ export const removePlayerByName = async (name: string) => {
   return { players };
 };
 
-// =========================
-// 📋 GETTERS
-// =========================
-
 export const getPlayers = async () => players;
 
 export const getMatchConfig = () => matchConfig;
-
-// =========================
-// ⚙️ CONFIG
-// =========================
 
 export const updateMatchConfigField = async (
   field: keyof MatchConfig,
@@ -224,10 +209,6 @@ export const resetMatchConfig = async () => {
   await persist();
   return matchConfig;
 };
-
-// =========================
-// 🧹 RESET LISTA
-// =========================
 
 export const resetPlayers = async () => {
   players = [];
