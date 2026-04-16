@@ -8,6 +8,7 @@ import {
   updateMatchConfigField,
   resetPlayers,
   removePlayerByName,
+  removePlayerByIdOrName,
   maybeAutoReset,
 } from "../services/player.service";
 import {
@@ -141,6 +142,7 @@ const normalizeHour = (value: string): string | null => {
 };
 
 export const handleMessage = async (msg: any) => {
+  let chatIdForError: string | undefined;
   try {
     await maybeAutoReset();
 
@@ -166,15 +168,15 @@ export const handleMessage = async (msg: any) => {
         manualName = commandMatch[2]?.trim();
       } else {
         const matchConfigCommand = rawText.match(
-          /^partido\s+(dia|hora|lugar)\s*:\s*(.+)$/i,
+          /^partido\s+(dia|día|hora|lugar)\s*:\s*(.+)$/i,
         );
         if (matchConfigCommand) {
           command = "partido_update";
           manualName = matchConfigCommand[2]?.trim();
-          partidoField = matchConfigCommand[1].toLowerCase() as
-            | "dia"
-            | "hora"
-            | "lugar";
+          partidoField = matchConfigCommand[1]
+            .toLowerCase()
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "") as "dia" | "hora" | "lugar";
         }
 
         if (/^partido\s+reset$/i.test(rawText)) {
@@ -193,6 +195,7 @@ export const handleMessage = async (msg: any) => {
     }
 
     const chatId = getGroupChatId(msg);
+    chatIdForError = chatId;
 
     if (!isAllowedGroup(chatId)) {
       if (DEBUG && COMMANDS.includes(command)) {
@@ -250,7 +253,7 @@ export const handleMessage = async (msg: any) => {
     if (command === "salgo") {
       const result = manualName
         ? await removePlayerByName(manualName)
-        : await removePlayer(id);
+        : await removePlayerByIdOrName(id, resolveMemberDisplayName(msg, id));
 
       if ("error" in result) {
         return sendGroupText(msg, chatId, `⚠️ ${result.error}`);
@@ -272,7 +275,16 @@ export const handleMessage = async (msg: any) => {
     }
 
     if (command === "limpiar lista") {
-      await resetPlayers();
+      try {
+        await resetPlayers();
+      } catch (err) {
+        console.error("❌ Error reiniciando lista:", err);
+        return sendGroupText(
+          msg,
+          chatId,
+          "⚠️ No pude reiniciar la lista (error de persistencia). Intenta de nuevo en unos segundos.",
+        );
+      }
 
       return sendGroupText(
         msg,
@@ -308,7 +320,17 @@ export const handleMessage = async (msg: any) => {
             "⚠️ Día inválido. Usa de lunes a domingo. Ej: `partido dia: viernes`.",
           );
         }
-        const config = await updateMatchConfigField("day", normalized);
+        let config;
+        try {
+          config = await updateMatchConfigField("day", normalized);
+        } catch (err) {
+          console.error("❌ Error actualizando partido (día):", err);
+          return sendGroupText(
+            msg,
+            chatId,
+            "⚠️ No pude guardar el cambio en MongoDB. Intenta de nuevo en unos segundos.",
+          );
+        }
         return sendGroupText(
           msg,
           chatId,
@@ -326,7 +348,17 @@ export const handleMessage = async (msg: any) => {
             "⚠️ Hora inválida. Usa formato 0-23 o HH:MM. Ej: `partido hora: 21:30`.",
           );
         }
-        const config = await updateMatchConfigField("hour", normalized);
+        let config;
+        try {
+          config = await updateMatchConfigField("hour", normalized);
+        } catch (err) {
+          console.error("❌ Error actualizando partido (hora):", err);
+          return sendGroupText(
+            msg,
+            chatId,
+            "⚠️ No pude guardar el cambio en MongoDB. Intenta de nuevo en unos segundos.",
+          );
+        }
         return sendGroupText(
           msg,
           chatId,
@@ -350,7 +382,17 @@ export const handleMessage = async (msg: any) => {
           "⚠️ Lugar inválido. Debe tener al menos 2 caracteres. Ej: `partido lugar: Club Florida`.",
         );
       }
-      const config = await updateMatchConfigField("place", normalizedPlace);
+      let config;
+      try {
+        config = await updateMatchConfigField("place", normalizedPlace);
+      } catch (err) {
+        console.error("❌ Error actualizando partido (lugar):", err);
+        return sendGroupText(
+          msg,
+          chatId,
+          "⚠️ No pude guardar el cambio en MongoDB. Intenta de nuevo en unos segundos.",
+        );
+      }
       return sendGroupText(
         msg,
         chatId,
@@ -360,7 +402,17 @@ export const handleMessage = async (msg: any) => {
     }
 
     if (command === "partido_reset") {
-      const config = await resetMatchConfig();
+      let config;
+      try {
+        config = await resetMatchConfig();
+      } catch (err) {
+        console.error("❌ Error reiniciando partido:", err);
+        return sendGroupText(
+          msg,
+          chatId,
+          "⚠️ No pude reiniciar el partido (error de persistencia). Intenta de nuevo en unos segundos.",
+        );
+      }
       return sendGroupText(
         msg,
         chatId,
@@ -370,5 +422,18 @@ export const handleMessage = async (msg: any) => {
     }
   } catch (error) {
     console.error("❌ Error en handler:", error);
+    // Mejor UX: si el error ocurre ya dentro de un chat permitido, avisar genérico.
+    try {
+      const chatId = chatIdForError ?? getGroupChatId(msg);
+      if (typeof chatId === "string" && isAllowedGroup(chatId)) {
+        await sendGroupText(
+          msg,
+          chatId,
+          "⚠️ Ocurrió un error interno. Si vuelve a pasar, probá de nuevo en unos segundos.",
+        );
+      }
+    } catch {
+      // no-op: si no se puede responder, al menos ya quedó logueado arriba
+    }
   }
 };

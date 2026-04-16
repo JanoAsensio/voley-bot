@@ -33,27 +33,56 @@ const STORAGE_KEY = "global";
 
 const normalizeManualNameForMatch = (name: string) => name.trim().toLowerCase();
 
+const getLocalDateKey = (date = new Date()): string => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+};
+
+class PersistenceError extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = "PersistenceError";
+    if (cause !== undefined) (this as any).cause = cause;
+  }
+}
+
 const persist = async () => {
   if (!collection) return;
 
-  await collection.updateOne(
-    { _id: STORAGE_KEY },
-    {
-      $set: {
-        players,
-        matchConfig,
-        lastResetDate,
-        updatedAt: new Date(),
+  try {
+    await collection.updateOne(
+      { _id: STORAGE_KEY },
+      {
+        $set: {
+          players,
+          matchConfig,
+          lastResetDate,
+          updatedAt: new Date(),
+        },
       },
-    },
-    { upsert: true },
-  );
+      { upsert: true },
+    );
+  } catch (err) {
+    throw new PersistenceError(
+      "No se pudo persistir el estado en MongoDB.",
+      err,
+    );
+  }
 };
 
 export const initPlayerStore = async () => {
   const uri = process.env.MONGODB_URI?.trim();
   if (!uri) {
-    console.warn("⚠️ MONGODB_URI no definido");
+    const msg =
+      "⚠️ MONGODB_URI no definido. El bot funcionará sin persistencia (memoria volátil).";
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        `${msg} En producción se requiere persistencia; configura MONGODB_URI en Railway.`,
+      );
+    }
+    console.warn(msg);
     return;
   }
 
@@ -99,7 +128,7 @@ const shouldReset = (): boolean => {
 
   if (matchDayIndex === -1) return false;
 
-  const todayStr = today.toISOString().split("T")[0];
+  const todayStr = getLocalDateKey(today);
 
   if (lastResetDate === todayStr) return false;
 
@@ -109,10 +138,19 @@ const shouldReset = (): boolean => {
 export const maybeAutoReset = async () => {
   if (!shouldReset()) return;
 
-  players = [];
-  lastResetDate = new Date().toISOString().split("T")[0];
+  const prevPlayers = players;
+  const prevLastResetDate = lastResetDate;
 
-  await persist();
+  players = [];
+  lastResetDate = getLocalDateKey();
+
+  try {
+    await persist();
+  } catch (err) {
+    players = prevPlayers;
+    lastResetDate = prevLastResetDate;
+    throw err;
+  }
 
   console.log("🔁 Lista reiniciada automáticamente");
 };
@@ -130,18 +168,29 @@ export const addPlayer = async (player: Player) => {
     return { error: "Ya estás anotado" };
   }
 
-  players.push({ ...player, source: "member" });
-  await persist();
+  const prevPlayers = players;
+  players = [...players, { ...player, source: "member" }];
+
+  try {
+    await persist();
+  } catch (err) {
+    players = prevPlayers;
+    throw err;
+  }
 
   return { players };
 };
 
 export const addManualPlayer = async (name: string) => {
-  if (!isValidLength(name)) {
+  const clean = name.trim();
+  if (clean.length < 0) {
+    return { error: "El nombre debe tener al menos 1 caracter." };
+  }
+  if (!isValidLength(clean)) {
     return { error: "El nombre no puede superar los 20 caracteres." };
   }
 
-  const normalizedNewName = normalizeManualNameForMatch(name);
+  const normalizedNewName = normalizeManualNameForMatch(clean);
 
   const exists = players.some(
     (p) => normalizeManualNameForMatch(p.name) === normalizedNewName,
@@ -151,12 +200,21 @@ export const addManualPlayer = async (name: string) => {
     return { error: "Ese jugador ya está anotado" };
   }
 
-  players.push({
-    name,
-    source: "manual",
-  });
+  const prevPlayers = players;
+  players = [
+    ...players,
+    {
+      name: clean,
+      source: "manual",
+    },
+  ];
 
-  await persist();
+  try {
+    await persist();
+  } catch (err) {
+    players = prevPlayers;
+    throw err;
+  }
 
   return { players };
 };
@@ -168,14 +226,77 @@ export const removePlayer = async (id: string) => {
     return { error: "No estás en la lista" };
   }
 
-  players.splice(index, 1);
-  await persist();
+  const prevPlayers = players;
+  players = players.filter((p) => p.id !== id);
+
+  try {
+    await persist();
+  } catch (err) {
+    players = prevPlayers;
+    throw err;
+  }
+
+  return { players };
+};
+
+export const removePlayerByIdOrName = async (
+  id: string,
+  fallbackName: string,
+) => {
+  // 1) Intentar por id (caso jugador agregado con `estoy`)
+  const byIdIndex = players.findIndex((p) => p.id === id);
+
+  if (byIdIndex !== -1) {
+    const prevPlayers = players;
+    players = players.filter((p) => p.id !== id);
+
+    try {
+      await persist();
+    } catch (err) {
+      players = prevPlayers;
+      throw err;
+    }
+
+    return { players };
+  }
+
+  // 2) Si no existe por id, intentar por nombre normalizado (caso `estoy: nombre`)
+  const clean = fallbackName.trim();
+  if (clean.length < 0) {
+    return { error: "Nombre inválido. Ej: `salgo: Juan`." };
+  }
+
+  const normalized = normalizeManualNameForMatch(clean);
+
+  const hasByName = players.some(
+    (p) => normalizeManualNameForMatch(p.name) === normalized,
+  );
+
+  if (!hasByName) {
+    return { error: "No estás en la lista" };
+  }
+
+  const prevPlayers = players;
+  players = players.filter(
+    (p) => normalizeManualNameForMatch(p.name) !== normalized,
+  );
+
+  try {
+    await persist();
+  } catch (err) {
+    players = prevPlayers;
+    throw err;
+  }
 
   return { players };
 };
 
 export const removePlayerByName = async (name: string) => {
-  const normalized = normalizeManualNameForMatch(name);
+  const clean = name.trim();
+  if (clean.length < 2) {
+    return { error: "Nombre inválido. Ej: `salgo: Juan`." };
+  }
+  const normalized = normalizeManualNameForMatch(clean);
 
   const index = players.findIndex(
     (p) => normalizeManualNameForMatch(p.name) === normalized,
@@ -185,8 +306,17 @@ export const removePlayerByName = async (name: string) => {
     return { error: "Ese jugador no está en la lista" };
   }
 
-  players.splice(index, 1);
-  await persist();
+  const prevPlayers = players;
+  players = players.filter(
+    (p) => normalizeManualNameForMatch(p.name) !== normalized,
+  );
+
+  try {
+    await persist();
+  } catch (err) {
+    players = prevPlayers;
+    throw err;
+  }
 
   return { players };
 };
@@ -199,18 +329,39 @@ export const updateMatchConfigField = async (
   field: keyof MatchConfig,
   value: string,
 ) => {
-  matchConfig[field] = value;
-  await persist();
+  const prevConfig = matchConfig;
+  matchConfig = { ...matchConfig, [field]: value };
+
+  try {
+    await persist();
+  } catch (err) {
+    matchConfig = prevConfig;
+    throw err;
+  }
   return matchConfig;
 };
 
 export const resetMatchConfig = async () => {
+  const prevConfig = matchConfig;
   matchConfig = { ...DEFAULT_MATCH_CONFIG };
-  await persist();
+
+  try {
+    await persist();
+  } catch (err) {
+    matchConfig = prevConfig;
+    throw err;
+  }
   return matchConfig;
 };
 
 export const resetPlayers = async () => {
+  const prevPlayers = players;
   players = [];
-  await persist();
+
+  try {
+    await persist();
+  } catch (err) {
+    players = prevPlayers;
+    throw err;
+  }
 };
