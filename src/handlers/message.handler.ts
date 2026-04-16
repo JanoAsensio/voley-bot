@@ -51,11 +51,36 @@ const getGroupChatId = (msg: any): string => {
  * - mensajes de otros usuarios: responder citando (`reply`) por UX
  * - mensajes propios (`fromMe`): enviar plano para evitar errores de quote
  */
-const sendGroupText = (msg: any, chatId: string, text: string) => {
-  if (!msg.fromMe) {
-    return msg.reply(text);
+// const sendGroupText = (msg: any, chatId: string, text: string) => {
+//   if (!msg.fromMe) {
+//     return msg.reply(text);
+//   }
+//   return msg.client.sendMessage(chatId, text, { sendSeen: false });
+// };
+
+const sendGroupText = async (msg: any, chatId: string, text: string) => {
+  try {
+    if (!msg.fromMe) {
+      return await msg.reply(text);
+    }
+
+    return await msg.client.sendMessage(chatId, text, {
+      sendSeen: false,
+    });
+  } catch (err) {
+    console.error("❌ Error enviando mensaje, reintentando...", err);
+
+    await new Promise((res) => setTimeout(res, 200));
+
+    try {
+      return await msg.client.sendMessage(chatId, text, {
+        sendSeen: false,
+      });
+    } catch (err2) {
+      console.error("❌ Segundo intento fallido:", err2);
+      return null;
+    }
   }
-  return msg.client.sendMessage(chatId, text, { sendSeen: false });
 };
 
 /**
