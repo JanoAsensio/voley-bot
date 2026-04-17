@@ -1,7 +1,9 @@
 // Debe ir primero: los demás imports leen process.env al cargarse (p. ej. GROUP_ID en message.handler).
 import "dotenv/config";
 
+import fs from "node:fs";
 import path from "node:path";
+import puppeteer from "puppeteer";
 import { Client, RemoteAuth } from "whatsapp-web.js";
 import qrcode from "qrcode-terminal";
 import { handleMessage } from "./handlers/message.handler";
@@ -17,6 +19,64 @@ const groupIds = (process.env.GROUP_ID ?? "")
 if (groupIds.length > 0 && !groupIds.every((id) => id.endsWith("@g.us"))) {
   console.warn(
     "⚠️ GROUP_ID debe ser el JID del grupo (termina en @g.us). Un ID @lid no filtra mensajes de grupo.",
+  );
+}
+
+/**
+ * whatsapp-web.js usa puppeteer-core: no trae Chrome. Hay que indicar un ejecutable.
+ * Railway: Chromium del sistema. Local: env, Chrome instalado en macOS/Linux, o el browser que baja el paquete `puppeteer`.
+ */
+function resolvePuppeteerExecutablePath(): string {
+  const fromEnv = (
+    process.env.PUPPETEER_EXECUTABLE_PATH ??
+    process.env.CHROME_PATH ??
+    ""
+  ).trim();
+  if (fromEnv) {
+    if (fs.existsSync(fromEnv)) return fromEnv;
+    console.warn(`⚠️ PUPPETEER_EXECUTABLE_PATH / CHROME_PATH no existe: ${fromEnv}`);
+  }
+
+  if (process.env.RAILWAY_ENVIRONMENT) {
+    return "/usr/bin/chromium";
+  }
+
+  try {
+    const bundled = puppeteer.executablePath();
+    if (bundled && fs.existsSync(bundled)) return bundled;
+  } catch {
+    // sin browser descargado aún
+  }
+
+  if (process.platform === "darwin") {
+    const candidates = [
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Applications/Chromium.app/Contents/MacOS/Chromium",
+      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+      "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    ];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) return p;
+    }
+  }
+
+  if (process.platform === "linux") {
+    const candidates = [
+      "/usr/bin/google-chrome-stable",
+      "/usr/bin/google-chrome",
+      "/usr/bin/chromium",
+      "/usr/bin/chromium-browser",
+    ];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) return p;
+    }
+  }
+
+  throw new Error(
+    "No se encontró Chrome/Chromium para Puppeteer. Opciones:\n" +
+      "  • Instalá Google Chrome y volvé a ejecutar, o\n" +
+      "  • Definí en .env: PUPPETEER_EXECUTABLE_PATH=/ruta/al/Google Chrome (macOS: …/Google Chrome.app/Contents/MacOS/Google Chrome), o\n" +
+      "  • Ejecutá: npx puppeteer browsers install chrome",
   );
 }
 
@@ -37,6 +97,11 @@ if (groupIds.length > 0 && !groupIds.every((id) => id.endsWith("@g.us"))) {
     // Ruta estable relativa al cwd del proceso (en Railway suele ser /app).
     const authDataPath = path.join(process.cwd(), ".wwebjs_auth");
 
+    const chromePath = resolvePuppeteerExecutablePath();
+    if (!isRailway) {
+      console.log(`🌐 Usando navegador: ${chromePath}`);
+    }
+
     const client = new Client({
       authStrategy: new RemoteAuth({
         store,
@@ -45,7 +110,7 @@ if (groupIds.length > 0 && !groupIds.every((id) => id.endsWith("@g.us"))) {
         dataPath: authDataPath,
       }),
       puppeteer: {
-        executablePath: isRailway ? "/usr/bin/chromium" : undefined,
+        executablePath: chromePath,
         headless: true,
         args: [
           "--no-sandbox",
