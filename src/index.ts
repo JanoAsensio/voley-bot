@@ -10,7 +10,7 @@ import { handleMessage } from "./handlers/message.handler";
 import { initPlayerStore } from "./services/player.service";
 
 import mongoose from "mongoose";
-import { MongoStore } from "wwebjs-mongo";
+import { MongoSessionStore } from "./services/mongoSession.store";
 
 const groupIds = (process.env.GROUP_ID ?? "")
   .split(",")
@@ -87,15 +87,15 @@ function resolvePuppeteerExecutablePath(): string {
       process.env.BOT_SHOW_QR_ON_RAILWAY === "1" ||
       process.env.BOT_SHOW_QR_ON_RAILWAY === "true";
 
-    // 1. Mongoose: mismo cluster que `player.service`, usado por wwebjs-mongo (GridFS de la sesión WA).
+    // 1. Mongoose: mismo cluster que `player.service`, usado para GridFS de la sesión WA.
     await mongoose.connect(process.env.MONGODB_URI!);
     console.log("📥 Mongoose conectado (sesión WhatsApp → MongoDB / GridFS)");
 
-    // 2. Store de sesión (RemoteAuth + wwebjs-mongo)
-    const store = new MongoStore({ mongoose });
-
-    // Ruta estable relativa al cwd del proceso (en Railway suele ser /app).
+    // Ruta estable relativa al cwd (Railway: /app). Debe coincidir con RemoteAuth `dataPath`.
     const authDataPath = path.join(process.cwd(), ".wwebjs_auth");
+
+    // 2. Store de sesión (RemoteAuth + GridFS); lee el ZIP en `authDataPath`, no en el cwd.
+    const store = new MongoSessionStore({ mongoose, dataPath: authDataPath });
 
     const chromePath = resolvePuppeteerExecutablePath();
     if (!isRailway) {
