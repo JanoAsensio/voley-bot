@@ -1,6 +1,7 @@
 // Debe ir primero: los demás imports leen process.env al cargarse (p. ej. GROUP_ID en message.handler).
 import "dotenv/config";
 
+import path from "node:path";
 import { Client, RemoteAuth } from "whatsapp-web.js";
 import qrcode from "qrcode-terminal";
 import { handleMessage } from "./handlers/message.handler";
@@ -21,38 +22,52 @@ if (groupIds.length > 0 && !groupIds.every((id) => id.endsWith("@g.us"))) {
 
 (async () => {
   try {
-    // 1. Conectar Mongo (ya lo usás para players)
-    await mongoose.connect(process.env.MONGODB_URI!);
-
-    console.log("📥 MongoDB conectado");
-
-    // 2. Crear store para sesión de WhatsApp
     const isRailway = !!process.env.RAILWAY_ENVIRONMENT;
+    const showQrOnRailway =
+      process.env.BOT_SHOW_QR_ON_RAILWAY === "1" ||
+      process.env.BOT_SHOW_QR_ON_RAILWAY === "true";
 
-    // 3. Crear cliente con RemoteAuth
+    // 1. Mongoose: mismo cluster que `player.service`, usado por wwebjs-mongo (GridFS de la sesión WA).
+    await mongoose.connect(process.env.MONGODB_URI!);
+    console.log("📥 Mongoose conectado (sesión WhatsApp → MongoDB / GridFS)");
+
+    // 2. Store de sesión (RemoteAuth + wwebjs-mongo)
     const store = new MongoStore({ mongoose });
+
+    // Ruta estable relativa al cwd del proceso (en Railway suele ser /app).
+    const authDataPath = path.join(process.cwd(), ".wwebjs_auth");
 
     const client = new Client({
       authStrategy: new RemoteAuth({
         store,
         clientId: "voley-bot",
-        dataPath: "./sessions",
         backupSyncIntervalMs: 300000,
+        dataPath: authDataPath,
       }),
       puppeteer: {
-        executablePath: process.env.RAILWAY_ENVIRONMENT
-          ? "/usr/bin/chromium"
-          : undefined,
+        executablePath: isRailway ? "/usr/bin/chromium" : undefined,
         headless: true,
-        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+        args: [
+          "--no-sandbox",
+          "--disable-setuid-sandbox",
+          "--disable-dev-shm-usage",
+          "--disable-accelerated-2d-canvas",
+          "--no-first-run",
+          "--disable-gpu",
+        ],
       },
     });
 
-    // 4. Eventos
+    // 3. Eventos (diagnóstico útil en Railway)
     client.on("qr", (qr) => {
-      if (!isRailway) {
-        console.log("📲 Escaneá este QR (solo una vez)");
+      if (!isRailway || showQrOnRailway) {
+        console.log("📲 Escaneá este QR (vinculación de WhatsApp)");
         qrcode.generate(qr, { small: true });
+      } else {
+        console.warn(
+          "⚠️ WhatsApp pidió QR pero en Railway no se muestra por defecto. " +
+            "Si es la primera vez en este entorno, poné BOT_SHOW_QR_ON_RAILWAY=true en variables, redeploy, escaneá el QR de los logs y luego quitá esa variable.",
+        );
       }
     });
 
@@ -60,16 +75,33 @@ if (groupIds.length > 0 && !groupIds.every((id) => id.endsWith("@g.us"))) {
       console.log("🔐 Auth OK");
     });
 
+    client.on("auth_failure", (msg) => {
+      console.error("❌ auth_failure:", msg);
+    });
+
+    client.on("change_state", (s) => {
+      console.log("↪️ Estado WA:", s);
+    });
+
+    client.on("loading_screen", (percent, message) => {
+      console.log(`⏳ Cargando WhatsApp Web: ${percent}% — ${message}`);
+    });
+
     client.on("ready", () => {
       console.log("🤖 Bot listo");
     });
 
+    client.on("disconnected", (reason) => {
+      console.warn("⚠️ Cliente desconectado:", reason);
+    });
+
     client.on("message_create", handleMessage);
 
-    // 5. Inicializar tu store actual (players)
+    // 4. Lista de jugadores (driver nativo `mongodb`, misma URI)
     await initPlayerStore();
 
-    // 6. Iniciar cliente
+    // 5. Arranque del navegador (puede tardar varios minutos la primera vez)
+    console.log("🚀 Inicializando cliente de WhatsApp…");
     await client.initialize();
   } catch (err) {
     console.error("❌ Error al iniciar:", err);
