@@ -1,10 +1,13 @@
 // Debe ir primero: los demás imports leen process.env al cargarse (p. ej. GROUP_ID en message.handler).
 import "dotenv/config";
 
-import { Client, LocalAuth } from "whatsapp-web.js";
+import { Client, RemoteAuth } from "whatsapp-web.js";
 import qrcode from "qrcode-terminal";
 import { handleMessage } from "./handlers/message.handler";
 import { initPlayerStore } from "./services/player.service";
+
+import mongoose from "mongoose";
+import { MongoStore } from "wwebjs-mongo";
 
 const groupIds = (process.env.GROUP_ID ?? "")
   .split(",")
@@ -16,27 +19,58 @@ if (groupIds.length > 0 && !groupIds.every((id) => id.endsWith("@g.us"))) {
   );
 }
 
-const client = new Client({
-  authStrategy: new LocalAuth({
-    clientId: "voley-bot-fresh",
-  }),
-});
+(async () => {
+  try {
+    // 1. Conectar Mongo (ya lo usás para players)
+    await mongoose.connect(process.env.MONGODB_URI!);
 
-client.on("qr", (qr) => {
-  if (process.env.NODE_ENV !== "production") {
-    qrcode.generate(qr, { small: true });
-  }
-});
+    console.log("📥 MongoDB conectado");
 
-client.on("ready", () => {
-  console.log("🤖 Bot listo");
-});
+    // 2. Crear store para sesión de WhatsApp
+    const store = new MongoStore({ mongoose });
 
-client.on("message_create", handleMessage);
+    // 3. Crear cliente con RemoteAuth
+    const client = new Client({
+      authStrategy: new RemoteAuth({
+        store,
+        clientId: "voley-bot",
+        backupSyncIntervalMs: 300000, // guarda cada 5 min
+      }),
+      puppeteer: {
+        executablePath:
+          process.env.NODE_ENV === "production"
+            ? "/usr/bin/chromium"
+            : undefined,
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      },
+    });
 
-void initPlayerStore()
-  .then(() => client.initialize())
-  .catch((err) => {
+    // 4. Eventos
+    client.on("qr", (qr) => {
+      if (process.env.NODE_ENV !== "production") {
+        console.log("📲 Escaneá este QR (solo una vez)");
+        qrcode.generate(qr, { small: true });
+      }
+    });
+
+    client.on("authenticated", () => {
+      console.log("🔐 Auth OK");
+    });
+
+    client.on("ready", () => {
+      console.log("🤖 Bot listo");
+    });
+
+    client.on("message_create", handleMessage);
+
+    // 5. Inicializar tu store actual (players)
+    await initPlayerStore();
+
+    // 6. Iniciar cliente
+    await client.initialize();
+  } catch (err) {
     console.error("❌ Error al iniciar:", err);
-    process.exitCode = 1;
-  });
+    process.exit(1);
+  }
+})();
