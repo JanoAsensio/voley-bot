@@ -48,7 +48,7 @@ if (groupIds.length > 0 && !groupIds.every((id) => id.endsWith("@g.us"))) {
 
     // 4. Eventos
     client.on("qr", (qr) => {
-      if (process.env.NODE_ENV !== "production") {
+      if (!process.env.RAILWAY_ENVIRONMENT) {
         console.log("📲 Escaneá este QR (solo una vez)");
         qrcode.generate(qr, { small: true });
       }
