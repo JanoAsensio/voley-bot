@@ -93,6 +93,9 @@ function resolvePuppeteerExecutablePath(): string {
 
     // Ruta estable relativa al cwd (Railway: /app). Debe coincidir con RemoteAuth `dataPath`.
     const authDataPath = path.join(process.cwd(), ".wwebjs_auth");
+    // Si hay sesión en Mongo, RemoteAuth descarga el ZIP aquí antes de crear subcarpetas;
+    // sin esto el contenedor nuevo en Railway no tiene `.wwebjs_auth/` → ENOENT al escribir el ZIP.
+    fs.mkdirSync(authDataPath, { recursive: true });
 
     // 2. Store de sesión (RemoteAuth + GridFS); lee el ZIP en `authDataPath`, no en el cwd.
     const store = new MongoSessionStore({ mongoose, dataPath: authDataPath });
