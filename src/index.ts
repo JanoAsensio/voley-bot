@@ -27,20 +27,22 @@ if (groupIds.length > 0 && !groupIds.every((id) => id.endsWith("@g.us"))) {
     console.log("📥 MongoDB conectado");
 
     // 2. Crear store para sesión de WhatsApp
-    const store = new MongoStore({ mongoose });
+    const isRailway = !!process.env.RAILWAY_ENVIRONMENT;
 
     // 3. Crear cliente con RemoteAuth
+    const store = new MongoStore({ mongoose });
+
     const client = new Client({
       authStrategy: new RemoteAuth({
         store,
         clientId: "voley-bot",
-        backupSyncIntervalMs: 300000, // guarda cada 5 min
+        dataPath: "./sessions",
+        backupSyncIntervalMs: 300000,
       }),
       puppeteer: {
-        executablePath:
-          process.env.NODE_ENV === "production"
-            ? "/usr/bin/chromium"
-            : undefined,
+        executablePath: process.env.RAILWAY_ENVIRONMENT
+          ? "/usr/bin/chromium"
+          : undefined,
         headless: true,
         args: ["--no-sandbox", "--disable-setuid-sandbox"],
       },
@@ -48,7 +50,7 @@ if (groupIds.length > 0 && !groupIds.every((id) => id.endsWith("@g.us"))) {
 
     // 4. Eventos
     client.on("qr", (qr) => {
-      if (!process.env.RAILWAY_ENVIRONMENT) {
+      if (!isRailway) {
         console.log("📲 Escaneá este QR (solo una vez)");
         qrcode.generate(qr, { small: true });
       }
