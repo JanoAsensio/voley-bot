@@ -127,12 +127,13 @@ const shouldReset = (): boolean => {
   const matchDayIndex = WEEK_DAYS.indexOf(matchConfig.day.toLowerCase());
 
   if (matchDayIndex === -1) return false;
+  const resetDayIndex = (matchDayIndex + 1) % 7;
 
   const todayStr = getLocalDateKey(today);
 
   if (lastResetDate === todayStr) return false;
 
-  return todayIndex === matchDayIndex;
+  return todayIndex === resetDayIndex;
 };
 
 export const maybeAutoReset = async () => {
