@@ -8,6 +8,7 @@ import { Client, RemoteAuth } from "whatsapp-web.js";
 import qrcode from "qrcode-terminal";
 import { handleMessage } from "./handlers/message.handler";
 import { initPlayerStore } from "./services/player.service";
+import { checkWhatsAppSession } from "./utils/checkSession";
 
 import mongoose from "mongoose";
 import { MongoSessionStore } from "./services/mongoSession.store";
@@ -34,7 +35,9 @@ function resolvePuppeteerExecutablePath(): string {
   ).trim();
   if (fromEnv) {
     if (fs.existsSync(fromEnv)) return fromEnv;
-    console.warn(`⚠️ PUPPETEER_EXECUTABLE_PATH / CHROME_PATH no existe: ${fromEnv}`);
+    console.warn(
+      `⚠️ PUPPETEER_EXECUTABLE_PATH / CHROME_PATH no existe: ${fromEnv}`,
+    );
   }
 
   if (process.env.RAILWAY_ENVIRONMENT) {
@@ -103,6 +106,12 @@ function resolvePuppeteerExecutablePath(): string {
     const chromePath = resolvePuppeteerExecutablePath();
     if (!isRailway) {
       console.log(`🌐 Usando navegador: ${chromePath}`);
+    }
+
+    const hasSession = await checkWhatsAppSession();
+
+    if (!hasSession) {
+      console.log("⚠️ No hay sesión válida. Vas a tener que escanear QR.");
     }
 
     const client = new Client({
